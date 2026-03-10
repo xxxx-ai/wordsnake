@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>单词蛇王：全功能回归版</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #2c3e50; font-family: 'PingFang SC', sans-serif; touch-action: none; }
+        canvas { display: block; background: #e0e5df; }
+        
+        /* 状态栏 */
+        #ui-layer {
+            position: fixed; top: 10px; left: 10px; right: 10px; pointer-events: none;
+            display: flex; justify-content: space-between; z-index: 10;
+        }
+        .stat-card { background: rgba(44, 62, 80, 0.9); color: #fff; padding: 6px 12px; border-radius: 15px; font-size: 13px; }
+
+        /* 菜单按钮 */
+        #menu-box { position: fixed; top: 60px; right: 10px; display: flex; flex-direction: column; gap: 10px; pointer-events: auto; }
+        .icon-btn { width: 45px; height: 45px; background: #f1c40f; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 20px; box-shadow: 0 4px 8px rgba(0,0,0,0.2); }
+
+        /* 弹窗通用样式 */
+        .modal {
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            background: #fff; border-radius: 20px; display: none;
+            width: 85%; max-width: 350px; z-index: 2000; padding: 20px;
+            box-shadow: 0 10px 50px rgba(0,0,0,0.4); text-align: center;
+        }
+        .active { display: block !important; }
+
+        /* 单词列表滚动区 */
+        #book-list { height: 200px; overflow-y: auto; display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px; margin: 10px 0; }
+        .book-item { font-size: 12px; padding: 4px; background: #f9f9f9; border-radius: 4px; color: #ccc; }
+        .unlocked { color: #27ae60; background: #e8f6ed; }
+
+        .btn-main { width: 100%; padding: 12px; border: none; border-radius: 10px; font-size: 18px; font-weight: bold; cursor: pointer; margin-top: 10px; }
+        .btn-green { background: #27ae60; color: white; }
+        .btn-yellow { background: #f39c12; color: white; }
+
+        #joy-base { position: fixed; width: 100px; height: 100px; background: rgba(0,0,0,0.05); border-radius: 50%; bottom: 40px; left: 40px; display: none; border: 1px solid rgba(255,255,255,0.2); }
+        #joy-stick { position: absolute; width: 40px; height: 40px; background: #fff; border-radius: 50%; top: 30px; left: 30px; }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="stat-card">💰 <span id="coin-count">0</span></div>
+        <div class="stat-card">🐍 <span id="snake-len">1</span></div>
+        <div class="stat-card">📖 <span id="unlock-count">0</span></div>
+    </div>
+
+    <div id="menu-box">
+        <div class="icon-btn" onclick="openBook()">📖</div>
+        <div class="icon-btn" onclick="openShop()">🎁</div>
+    </div>
+
+    <div id="word-modal" class="modal">
+        <h1 id="m-en" style="margin:0; font-size:36px;">Word</h1>
+        <p id="m-zh" style="color:#7f8c8d; font-size:20px;">意思</p>
+        <button class="btn-main btn-green" onclick="closeModal()">记住了</button>
+    </div>
+
+    <div id="book-modal" class="modal">
+        <h3>我的单词册</h3>
+        <div id="book-list"></div>
+        <button class="btn-main" style="background:#eee" onclick="this.parentElement.classList.remove('active'); isPaused=false;">关闭</button>
+    </div>
+
+    <div id="shop-modal" class="modal">
+        <h3>幸运抽奖</h3>
+        <p>50金币抽一次新皮肤</p>
+        <div id="current-skin-box" style="margin:10px 0; font-weight:bold;">当前皮肤颜色：<span id="skin-color-name">经典绿</span></div>
+        <button class="btn-main btn-yellow" onclick="drawSkin()">花费50金币抽奖</button>
+        <button class="btn-main" style="background:#eee" onclick="this.parentElement.classList.remove('active'); isPaused=false;">离开</button>
+    </div>
+
+    <div id="joy-base"><div id="joy-stick"></div></div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const wordBank = [
+            {en: "abandon", zh: "放弃"}, {en: "ability", zh: "能力"}, {en: "abnormal", zh: "异常的"},
+            {en: "aboard", zh: "在船上"}, {en: "abolish", zh: "废除"}, {en: "abrupt", zh: "突然的"},
+            {en: "absence", zh: "缺席"}, {en: "absolute", zh: "绝对的"}, {en: "absorb", zh: "吸收"},
+            {en: "academic", zh: "学术的"}, {en: "accent", zh: "口音"}, {en: "accept", zh: "接受"}
+        ];
+
+        const skinColors = ["#27ae60", "#e74c3c", "#9b59b6", "#3498db", "#f1c40f", "#e67e22", "#34495e"];
+        let currentSkin = localStorage.getItem('SNAKE_SKIN') || "#27ae60";
+        let coins = parseInt(localStorage.getItem('SNAKE_COINS')) || 0;
+        let unlocked = new Set(JSON.parse(localStorage.getItem('SNAKE_WORDS') || "[]"));
+
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        let player = { x: 0, y: 0, speed: 6.5 };
+        let snakeBody = []; 
+        let bodyLength = 5; 
+        let worldWords = [], worldObs = [], worldChests = [];
+        let joystick = { active: false, x: 0, y: 0, startX: 0, startY: 0 };
+        let isPaused = false;
+
+        function init() {
+            resize();
+            // 生成世界地图
+            for(let i=0; i<60; i++) spawnWord();
+            for(let i=0; i<30; i++) worldObs.push({x:(Math.random()-0.5)*5000, y:(Math.random()-0.5)*5000, r:30+Math.random()*20});
+            for(let i=0; i<15; i++) worldChests.push({x:(Math.random()-0.5)*5000, y:(Math.random()-0.5)*5000});
+
+            updateUI();
+            bindEvents();
+            requestAnimationFrame(gameLoop);
+        }
+
+        function spawnWord() {
+            let w = wordBank[Math.floor(Math.random()*wordBank.length)];
+            worldWords.push({ ...w, x: (Math.random()-0.5)*5000, y: (Math.random()-0.5)*5000 });
+        }
+
+        function gameLoop() {
+            if (!isPaused) {
+                if (joystick.active) {
+                    player.x += joystick.x * player.speed;
+                    player.y += joystick.y * player.speed;
+                }
+                snakeBody.unshift({x: player.x, y: player.y});
+                if (snakeBody.length > bodyLength * 8) snakeBody.pop();
+                checkCollisions();
+            }
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            const cx = canvas.width/2, cy = canvas.height/2;
+
+            // 绘制网格
+            ctx.strokeStyle = "rgba(0,0,0,0.05)";
+            let gs = 120;
+            for(let x=(-player.x%gs); x<canvas.width; x+=gs) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); ctx.stroke(); }
+            for(let y=(-player.y%gs); y<canvas.height; y+=gs) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); ctx.stroke(); }
+
+            // 1. 障碍 (红色雷区)
+            worldObs.forEach(o => {
+                ctx.fillStyle = "rgba(231, 76, 60, 0.7)";
+                ctx.beginPath(); ctx.arc(o.x - player.x + cx, o.y - player.y + cy, o.r, 0, Math.PI*2); ctx.fill();
+            });
+
+            // 2. 宝箱 (金色方块)
+            worldChests.forEach(c => {
+                ctx.fillStyle = "#f1c40f";
+                ctx.fillRect(c.x - player.x + cx - 15, c.y - player.y + cy - 15, 30, 30);
+            });
+
+            // 3. 单词球
+            worldWords.forEach(w => {
+                let sx = w.x - player.x + cx, sy = w.y - player.y + cy;
+                ctx.fillStyle = "#3498db";
+                ctx.beginPath(); ctx.arc(sx, sy, 20, 0, Math.PI*2); ctx.fill();
+                ctx.fillStyle = "#2c3e50"; ctx.font = "bold 14px Arial"; ctx.textAlign = "center";
+                ctx.fillText(w.en, sx, sy + 38);
+            });
+
+            // 4. 蛇身
+            for (let i = 1; i < bodyLength; i++) {
+                let idx = i * 8;
+                if (snakeBody[idx]) {
+                    ctx.fillStyle = currentSkin; ctx.globalAlpha = 1 - (i/bodyLength);
+                    ctx.beginPath();
+                    ctx.arc(snakeBody[idx].x - player.x + cx, snakeBody[idx].y - player.y + cy, 16-(i*0.4), 0, Math.PI*2);
+                    ctx.fill();
+                }
+            }
+            ctx.globalAlpha = 1;
+
+            // 5. 蛇头
+            ctx.fillStyle = currentSkin;
+            ctx.beginPath(); ctx.arc(cx, cy, 18, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = "white";
+            ctx.beginPath(); ctx.arc(cx-6, cy-5, 4, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(cx+6, cy-5, 4, 0, Math.PI*2); ctx.fill();
+        }
+
+        function checkCollisions() {
+            // 撞单词
+            for(let i=worldWords.length-1; i>=0; i--) {
+                let w = worldWords[i];
+                if(Math.hypot(w.x-player.x, w.y-player.y) < 35) {
+                    isPaused = true;
+                    document.getElementById('m-en').innerText = w.en;
+                    document.getElementById('m-zh').innerText = w.zh;
+                    document.getElementById('word-modal').classList.add('active');
+                    unlocked.add(w.en);
+                    coins += 5; // 金币平衡
+                    bodyLength += 2;
+                    worldWords.splice(i, 1); spawnWord();
+                    updateUI();
+                    break;
+                }
+            }
+            // 撞宝箱
+            for(let i=worldChests.length-1; i>=0; i--) {
+                let c = worldChests[i];
+                if(Math.hypot(c.x-player.x, c.y-player.y) < 30) {
+                    let bonus = Math.floor(Math.random()*20)+10;
+                    alert("🎁 开启宝箱！金币 + " + bonus);
+                    coins += bonus;
+                    worldChests.splice(i, 1);
+                    updateUI();
+                }
+            }
+            // 撞障碍
+            worldObs.forEach(o => {
+                if(Math.hypot(o.x-player.x, o.y-player.y) < o.r + 10) {
+                    alert("💥 撞到障碍！身体缩短了...");
+                    bodyLength = 5; player.x = 0; player.y = 0; snakeBody = [];
+                    updateUI();
+                }
+            });
+        }
+
+        function closeModal() {
+            document.getElementById('word-modal').classList.remove('active');
+            isPaused = false; player.x += 50;
+        }
+
+        function openBook() {
+            isPaused = true;
+            let list = document.getElementById('book-list');
+            list.innerHTML = "";
+            wordBank.forEach(w => {
+                let item = document.createElement('div');
+                item.className = "book-item" + (unlocked.has(w.en) ? " unlocked" : "");
+                item.innerText = unlocked.has(w.en) ? w.en + " " + w.zh : "???";
+                list.appendChild(item);
+            });
+            document.getElementById('book-modal').classList.add('active');
+        }
+
+        function openShop() {
+            isPaused = true;
+            document.getElementById('shop-modal').classList.add('active');
+        }
+
+        function drawSkin() {
+            if(coins < 50) return alert("金币不足 50 哦，快去吃单词吧！");
+            coins -= 50;
+            currentSkin = skinColors[Math.floor(Math.random()*skinColors.length)];
+            localStorage.setItem('SNAKE_SKIN', currentSkin);
+            document.getElementById('skin-color-name').style.color = currentSkin;
+            document.getElementById('skin-color-name').innerText = "新肤色！";
+            updateUI();
+        }
+
+        function updateUI() {
+            document.getElementById('coin-count').innerText = coins;
+            document.getElementById('snake-len').innerText = bodyLength;
+            document.getElementById('unlock-count').innerText = unlocked.size;
+            localStorage.setItem('SNAKE_COINS', coins);
+            localStorage.setItem('SNAKE_WORDS', JSON.stringify([...unlocked]));
+        }
+
+        function bindEvents() {
+            canvas.addEventListener('touchstart', e => {
+                if(isPaused) return;
+                let t = e.touches[0]; joystick.active = true;
+                joystick.startX = t.clientX; joystick.startY = t.clientY;
+                document.getElementById('joy-base').style.display = 'block';
+                document.getElementById('joy-base').style.left = t.clientX - 50 + 'px';
+                document.getElementById('joy-base').style.top = t.clientY - 50 + 'px';
+            });
+            window.addEventListener('touchmove', e => {
+                if(!joystick.active) return;
+                let t = e.touches[0];
+                let dx = t.clientX - joystick.startX, dy = t.clientY - joystick.startY;
+                let dist = Math.hypot(dx, dy), ang = Math.atan2(dy, dx);
+                joystick.x = Math.cos(ang); joystick.y = Math.sin(ang);
+                document.getElementById('joy-stick').style.transform = `translate(${Math.cos(ang)*Math.min(dist,35)}px, ${Math.sin(ang)*Math.min(dist,35)}px)`;
+            });
+            window.addEventListener('touchend', () => { joystick.active = false; document.getElementById('joy-base').style.display = 'none'; });
+        }
+        function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+        init();
+    </script>
+</body>
+</html>
